@@ -3,8 +3,6 @@ import pandas as pd
 import plotly.express as px
 from supabase import create_client, Client
 from datetime import datetime, date
-import os
-from dotenv import load_dotenv
 import traceback
 
 st.set_page_config(page_title="Financial OS Pro", layout="wide", page_icon="💰")
@@ -12,15 +10,16 @@ st.set_page_config(page_title="Financial OS Pro", layout="wide", page_icon="💰
 # -----------------------------
 # SUPABASE CONNECTION & ENV
 # -----------------------------
-load_dotenv()
 
 @st.cache_resource
 def init_supabase():
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
-    if url and key:
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
         return create_client(url, key)
-    return None
+    except KeyError:
+        st.error("⚠️ Please configure Supabase secrets in Streamlit Cloud Settings")
+        return None
 
 supabase = init_supabase()
 
