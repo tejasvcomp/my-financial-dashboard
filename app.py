@@ -16,8 +16,8 @@ load_dotenv()
 
 @st.cache_resource
 def init_supabase():
-    url = os.getenv("https://cozpsoousfuhhydetflp.supabase.co")
-    key = os.getenv("sb_publishable_BgfygrtChFJJU3nstrAJpA_ZdBYP_5R")
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
     if url and key:
         return create_client(url, key)
     return None
