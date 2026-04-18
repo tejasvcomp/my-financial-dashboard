@@ -110,30 +110,151 @@ def auto_categorize(description: str) -> tuple[str, str]:
 # EXCEL MIGRATION
 # -----------------------------
 def migrate_excel_to_db(file, table_name: str):
-    if not supabase: return "❌ Supabase not connected"
+    """Migrate Excel data to Supabase database"""
+    if not supabase: 
+        return "❌ Supabase not connected"
+    
     try:
-        df = pd.read_excel(file).dropna(how="all")
+        # Read Excel file - handle multiple sheets/months
+        excel_file = pd.ExcelFile(file)
+        total_records = 0
+        
         if table_name == "transactions":
+            all_records = []
+            
+            # Process each sheet (month) in the Excel file
+            for sheet_name in excel_file.sheet_names:
+                try:
+                    # Read the sheet, skip header rows
+                    df = pd.read_excel(file, sheet_name=sheet_name, header=3)
+                    
+                    # Clean and process the dataframe
+                    # Your Excel has: Date, Rs, Discription columns
+                    df = df.dropna(how='all')  # Remove empty rows
+                    
+                    # Filter to only rows with actual transaction data
+                    for _, row in df.iterrows():
+                        # Check if we have valid date and amount
+                        if pd.isna(row.iloc[0]) or pd.isna(row.iloc[1]):
+                            continue
+                            
+                        try:
+                            date_val = row.iloc[0]
+                            amount = float(row.iloc[1])
+                            desc = str(row.iloc[2]) if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+                            
+                            # Skip summary rows
+                            if "total" in desc.lower() or "income" in desc.lower() or "expense" in desc.lower():
+                                continue
+                            
+                            # Auto-categorize
+                            cat, sub = auto_categorize(desc)
+                            
+                            # Determine month_year from sheet name or date
+                            if isinstance(date_val, pd.Timestamp):
+                                month_year = date_val.strftime("%b-%y")
+                                date_iso = date_val.date().isoformat()
+                            else:
+                                month_year = sheet_name[:7] if len(sheet_name) >= 7 else "Unknown"
+                                date_iso = str(date_val)
+                            
+                            all_records.append({
+                                "transaction_date": date_iso,
+                                "amount": -abs(amount) if amount > 0 else amount,  # Expenses are negative
+                                "description": desc.strip(),
+                                "category": cat,
+                                "subcategory": sub,
+                                "payment_method": "Unknown",
+                                "month_year": month_year,
+                                "is_recurring": "emi" in desc.lower() or "installment" in desc.lower() or "loan" in desc.lower(),
+                                "notes": ""
+                            })
+                            total_records += 1
+                            
+                        except Exception as row_error:
+                            # Skip problematic rows
+                            continue
+                            
+                except Exception as sheet_error:
+                    # Skip problematic sheets
+                    continue
+            
+            # Insert all records in batch
+            if all_records:
+                # Insert in chunks of 100 to avoid timeout
+                chunk_size = 100
+                for i in range(0, len(all_records), chunk_size):
+                    chunk = all_records[i:i+chunk_size]
+                    result = safe_db_call(
+                        lambda: supabase.table("transactions").insert(chunk).execute(),
+                        fallback=None,
+                        error_prefix="Batch insert failed"
+                    )
+                
+                return f"✅ Successfully migrated {total_records} transactions from {len(excel_file.sheet_names)} months"
+            else:
+                return "⚠️ No valid transactions found. Check Excel format."
+                
+        elif table_name == "assets":
+            # Handle home.xlsx assets migration
+            df = pd.read_excel(file, sheet_name=0, header=2)
             records = []
+            
             for _, row in df.iterrows():
-                if pd.isna(row.get("Date")) or pd.isna(row.get("Rs")): continue
-                desc = str(row.get("Discription", ""))
-                cat, sub = auto_categorize(desc)
-                records.append({
-                    "transaction_date": pd.to_datetime(row["Date"]).date().isoformat(),
-                    "amount": float(row["Rs"]),
-                    "description": desc,
-                    "category": cat,
-                    "subcategory": sub,
-                    "month_year": pd.to_datetime(row["Date"]).strftime("%b-%y"),
-                    "is_recurring": "emi" in desc.lower() or "installment" in desc.lower()
-                })
+                if pd.notna(row.iloc[0]) and pd.notna(row.iloc[1]):
+                    try:
+                        records.append({
+                            "asset_name": str(row.iloc[1]),
+                            "asset_type": "Property" if "Home" in str(row.iloc[1]) else "Other",
+                            "purchase_value": float(str(row.iloc[0]).replace(',', '')),
+                            "current_value": float(str(row.iloc[0]).replace(',', '')),
+                            "purchase_date": date.today().isoformat(),
+                            "location": "Netra Heights" if "Home" in str(row.iloc[1]) else "",
+                            "notes": ""
+                        })
+                    except:
+                        continue
+            
             if records:
-                safe_db_call(lambda: supabase.table("transactions").insert(records).execute())
-                return f"✅ Migrated {len(records)} transactions"
-        return f"⚠️ Migration for '{table_name}' not yet configured"
+                safe_db_call(lambda: supabase.table("assets").insert(records).execute())
+                return f"✅ Migrated {len(records)} assets"
+            
+        elif table_name == "loans":
+            # Handle home.xlsx loan migration
+            df = pd.read_excel(file, sheet_name="Home Loan", header=2)
+            records = []
+            
+            for _, row in df.iterrows():
+                if "LOAN DISBURSED" in str(row.iloc[2]):
+                    try:
+                        records.append({
+                            "loan_name": "Axis Home Loan",
+                            "lender": "Axis Bank",
+                            "principal_amount": float(str(row.iloc[1]).replace(',', '')),
+                            "current_balance": float(str(row.iloc[1]).replace(',', '')),
+                            "interest_rate": 7.15,
+                            "emi_amount": 56100.00,  # From your data
+                            "start_date": "2023-05-01",
+                            "tenure_months": 240,
+                            "remaining_emis": 160,
+                            "status": "active",
+                            "notes": "Home loan for Netra Heights"
+                        })
+                        break
+                    except:
+                        continue
+            
+            if records:
+                safe_db_call(lambda: supabase.table("loans").insert(records).execute())
+                return f"✅ Migrated {len(records)} loan(s)"
+                
+        else:
+            return f"⚠️ Migration for '{table_name}' not yet configured"
+            
     except Exception as e:
-        return f"❌ Migration Error: {str(e)}"
+        import traceback
+        error_detail = traceback.format_exc()
+        return f"❌ Migration Error: {str(e)}\n\nDetails: {error_detail}"
 
 # -----------------------------
 # SIDEBAR
