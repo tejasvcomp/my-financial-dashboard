@@ -6,7 +6,38 @@ from datetime import datetime, date
 import traceback
 
 st.set_page_config(page_title="Financial OS Pro", layout="wide", page_icon="💰")
+# -----------------------------
+# 🔐 SIMPLE PASSWORD PROTECTION
+# -----------------------------
+def check_password():
+    """Returns True if user enters correct password"""
+    # Set your password here (or use st.secrets for production)
+    PASSWORD = st.secrets.get("APP_PASSWORD", "Prihaan1208")  # Default fallback
+    
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if st.session_state.authenticated:
+        return True
+    
+    # Password form
+    st.markdown("### 🔐 Enter Password to Access Financial Dashboard")
+    password = st.text_input("Password", type="password", key="pwd_input")
+    
+    if st.button("Unlock"):
+        if password == PASSWORD:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("❌ Incorrect password")
+            return False
+    
+    return False
 
+# Block access if not authenticated
+if not check_password():
+    st.stop()  # Stop app execution here if not logged in
+    
 # -----------------------------
 # SUPABASE CONNECTION & ENV
 # -----------------------------
