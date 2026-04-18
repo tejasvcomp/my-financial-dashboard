@@ -6,167 +6,242 @@ import numpy as np
 st.set_page_config(page_title="Financial OS Pro", layout="wide")
 
 # -----------------------------
-# Helpers
+# SMART LOADER
 # -----------------------------
+def smart_read_excel(file):
+    for i in range(5):
+        try:
+            df = pd.read_excel(file, header=i)
+            if df.shape[1] > 2:
+                return df
+        except:
+            continue
+    return pd.read_excel(file)
+
 def normalize_cols(df):
-    df.columns = [c.strip().lower() for c in df.columns]
+    df.columns = [
+        str(c).strip().lower().replace(" ", "_").replace("-", "_")
+        for c in df.columns
+    ]
     return df
 
-def find_col(df, keys):
+def clean_df(df):
+    df = df.dropna(how="all")
+    df = df.loc[:, ~df.columns.str.contains("^unnamed")]
+    return df
+
+def detect_columns(df):
+    mapping = {"date": None, "amount": None, "desc": None, "category": None}
     for c in df.columns:
-        for k in keys:
-            if k in c:
-                return c
-    return None
-
-def classify_cashflow(df, desc_col, amt_col):
-    df["type"] = "other"
-    df.loc[df[amt_col] > 0, "type"] = "income"
-    df.loc[df[amt_col] < 0, "type"] = "expense"
-    return df
+        if "date" in c:
+            mapping["date"] = c
+        elif any(k in c for k in ["amount", "amt", "value"]):
+            mapping["amount"] = c
+        elif any(k in c for k in ["desc", "remark", "narration"]):
+            mapping["desc"] = c
+        elif any(k in c for k in ["category", "type"]):
+            mapping["category"] = c
+    return mapping
 
 @st.cache_data(show_spinner=False)
 def load_file(file):
-    if file is None:
-        return None
-    if file.name.endswith(".csv"):
-        df = pd.read_csv(file)
-    else:
-        df = pd.read_excel(file)
-    return normalize_cols(df)
+    try:
+        if file is None:
+            return None, None
+
+        if file.name.endswith(".csv"):
+            df = pd.read_csv(file)
+        else:
+            df = smart_read_excel(file)
+
+        df = normalize_cols(df)
+        df = clean_df(df)
+        mapping = detect_columns(df)
+
+        return df, mapping
+    except Exception as e:
+        st.error(f"Error loading {file.name}")
+        st.exception(e)
+        return None, None
 
 # -----------------------------
-# Sidebar
+# AUTO CATEGORY
+# -----------------------------
+def auto_classify(df, desc_col):
+    keywords = {
+        "food": ["zomato", "swiggy"],
+        "emi": ["emi", "loan"],
+        "fuel": ["petrol", "diesel"],
+        "shopping": ["amazon", "flipkart"]
+    }
+
+    df["auto_category"] = "other"
+
+    if desc_col:
+        for cat, words in keywords.items():
+            df.loc[
+                df[desc_col].astype(str).str.lower().str.contains("|".join(words)),
+                "auto_category"
+            ] = cat
+    return df
+
+# -----------------------------
+# AI INSIGHTS
+# -----------------------------
+def generate_insights(df_c, map_c, df_l, df_p):
+    insights = []
+
+    if df_c is not None:
+        amt = map_c.get("amount")
+        desc = map_c.get("desc")
+        date = map_c.get("date")
+
+        if amt:
+            df = df_c.copy()
+            df[amt] = pd.to_numeric(df[amt], errors="coerce").fillna(0)
+
+            exp = df[df[amt] < 0].copy()
+            exp["abs_amt"] = exp[amt].abs()
+
+            total_exp = exp["abs_amt"].sum()
+
+            if "auto_category" in df.columns:
+                cat = exp.groupby("auto_category")["abs_amt"].sum().sort_values(ascending=False)
+                if not cat.empty:
+                    top = cat.index[0]
+                    pct = (cat.iloc[0] / total_exp) * 100 if total_exp else 0
+                    insights.append(f"Top expense: {top} ({pct:.1f}%)")
+
+                    if pct > 40:
+                        insights.append("High concentration risk in spending")
+
+            if date:
+                df[date] = pd.to_datetime(df[date], errors="coerce")
+                m = df.groupby(df[date].dt.to_period("M"))[amt].sum()
+                if len(m) >= 2 and m.iloc[-1] < m.iloc[-2]:
+                    insights.append("Cashflow declining last month")
+
+    if df_l is not None:
+        insights.append("Active loans detected – consider prepayment if surplus exists")
+
+    if df_p is not None and "pnl" in df_p.columns:
+        if df_p["pnl"].sum() < 0:
+            insights.append("Portfolio is in loss – review allocations")
+
+    return insights
+
+# -----------------------------
+# SIDEBAR
 # -----------------------------
 st.sidebar.title("Financial OS Pro")
 
-wealth_file = st.sidebar.file_uploader("Wealth / Assets", type=["csv", "xlsx"])
-cash_file   = st.sidebar.file_uploader("Cashflow / Bank", type=["csv", "xlsx"])
-loan_file   = st.sidebar.file_uploader("Loans", type=["csv", "xlsx"])
+wealth_file = st.sidebar.file_uploader("Wealth", ["csv", "xlsx"])
+cash_file = st.sidebar.file_uploader("Cashflow", ["csv", "xlsx"])
+loan_file = st.sidebar.file_uploader("Loans", ["csv", "xlsx"])
+portfolio_file = st.sidebar.file_uploader("Portfolio", ["csv", "xlsx"])
 
 page = st.sidebar.radio("Navigate", [
-    "Dashboard", "Wealth", "Cashflow", "Loans"
+    "Dashboard", "Wealth", "Cashflow", "Loans", "Portfolio", "AI Insights"
 ])
 
-df_w = load_file(wealth_file)
-df_c = load_file(cash_file)
-df_l = load_file(loan_file)
+df_w, map_w = load_file(wealth_file)
+df_c, map_c = load_file(cash_file)
+df_l, map_l = load_file(loan_file)
+df_p, map_p = load_file(portfolio_file)
 
 # -----------------------------
 # ENGINE
 # -----------------------------
 net_worth = 0
-liquid_cash = 0
+cash = 0
 debt = 0
 burn = 0
-runway = 0
 
-# ---- Wealth ----
+# Wealth
 if df_w is not None:
-    val_col = find_col(df_w, ["value", "amount", "worth"])
-    if val_col:
-        net_worth += df_w[val_col].fillna(0).sum()
+    col = map_w.get("amount")
+    if col:
+        net_worth += df_w[col].sum()
 
-# ---- Cashflow ----
+# Cashflow
 if df_c is not None:
-    amt_col = find_col(df_c, ["amount", "balance", "amt"])
-    date_col = find_col(df_c, ["date"])
-    desc_col = find_col(df_c, ["desc", "remark", "note"])
+    amt = map_c.get("amount")
+    desc = map_c.get("desc")
 
-    if amt_col:
-        df_c[amt_col] = pd.to_numeric(df_c[amt_col], errors="coerce").fillna(0)
-        liquid_cash = df_c[amt_col].sum()
+    if amt:
+        df_c[amt] = pd.to_numeric(df_c[amt], errors="coerce").fillna(0)
+        cash = df_c[amt].sum()
 
-        df_c = classify_cashflow(df_c, desc_col, amt_col)
-        burn = abs(df_c[df_c["type"] == "expense"][amt_col].sum())
+        df_c = auto_classify(df_c, desc)
+        burn = abs(df_c[df_c[amt] < 0][amt].sum())
 
-    if date_col:
-        df_c[date_col] = pd.to_datetime(df_c[date_col], errors="coerce")
-
-# ---- Loans ----
+# Loans
 if df_l is not None:
-    loan_col = find_col(df_l, ["outstanding", "loan", "balance"])
-    paid_col = find_col(df_l, ["paid"])
-    total_col = find_col(df_l, ["total", "sanction"])
+    col = map_l.get("amount")
+    if col:
+        debt = df_l[col].sum()
 
-    if loan_col:
-        debt = df_l[loan_col].fillna(0).sum()
+# Portfolio
+portfolio_val = 0
+invested = 0
+pnl = 0
 
-# ---- Final Net Worth ----
-net_worth = net_worth + liquid_cash - debt
+if df_p is not None:
+    qty = next((c for c in df_p.columns if "qty" in c), None)
+    buy = next((c for c in df_p.columns if "buy" in c or "avg" in c), None)
+    ltp = next((c for c in df_p.columns if "ltp" in c or "price" in c), None)
 
-if burn > 0:
-    runway = liquid_cash / burn
+    if qty and buy and ltp:
+        df_p[qty] = pd.to_numeric(df_p[qty], errors="coerce").fillna(0)
+        df_p[buy] = pd.to_numeric(df_p[buy], errors="coerce").fillna(0)
+        df_p[ltp] = pd.to_numeric(df_p[ltp], errors="coerce").fillna(0)
+
+        df_p["invested"] = df_p[qty] * df_p[buy]
+        df_p["current"] = df_p[qty] * df_p[ltp]
+        df_p["pnl"] = df_p["current"] - df_p["invested"]
+
+        invested = df_p["invested"].sum()
+        portfolio_val = df_p["current"].sum()
+        pnl = df_p["pnl"].sum()
+
+net_worth = net_worth + cash + portfolio_val - debt
 
 # -----------------------------
 # DASHBOARD
 # -----------------------------
 if page == "Dashboard":
-    st.title("Executive Dashboard")
+    st.title("Dashboard")
 
     c1, c2, c3, c4, c5 = st.columns(5)
-
     c1.metric("Net Worth", f"₹ {net_worth:,.0f}")
-    c2.metric("Cash", f"₹ {liquid_cash:,.0f}")
+    c2.metric("Cash", f"₹ {cash:,.0f}")
     c3.metric("Debt", f"₹ {debt:,.0f}")
     c4.metric("Burn", f"₹ {burn:,.0f}")
-    c5.metric("Runway (months)", f"{runway:.1f}" if runway else "-")
-
-    st.divider()
-
-    # --- Cashflow Trend ---
-    if df_c is not None and date_col and amt_col:
-        trend = df_c.groupby(df_c[date_col].dt.to_period("M"))[amt_col].sum().reset_index()
-        trend[date_col] = trend[date_col].astype(str)
-
-        fig = px.bar(trend, x=date_col, y=amt_col, title="Monthly Cashflow")
-        st.plotly_chart(fig, use_container_width=True)
-
-    # --- Asset vs Debt ---
-    data = pd.DataFrame({
-        "Type": ["Assets", "Debt"],
-        "Value": [net_worth + debt, debt]
-    })
-    fig2 = px.pie(data, names="Type", values="Value", title="Assets vs Debt")
-    st.plotly_chart(fig2, use_container_width=True)
+    c5.metric("Portfolio", f"₹ {portfolio_val:,.0f}")
 
 # -----------------------------
-# WEALTH
+# PORTFOLIO
 # -----------------------------
-elif page == "Wealth":
-    st.title("Wealth Analysis")
-    if df_w is not None:
-        st.dataframe(df_w)
+elif page == "Portfolio":
+    st.title("Portfolio")
 
-        val_col = find_col(df_w, ["value", "amount"])
-        cat_col = find_col(df_w, ["type", "category"])
+    if df_p is not None:
+        st.dataframe(df_p)
 
-        if val_col and cat_col:
-            fig = px.pie(df_w, names=cat_col, values=val_col, title="Asset Allocation")
-            st.plotly_chart(fig, use_container_width=True)
+        if "current" in df_p.columns:
+            fig = px.pie(df_p, values="current", names=df_p.columns[0])
+            st.plotly_chart(fig)
 
 # -----------------------------
-# CASHFLOW
+# AI INSIGHTS
 # -----------------------------
-elif page == "Cashflow":
-    st.title("Cashflow Intelligence")
+elif page == "AI Insights":
+    st.title("AI Financial Insights")
 
-    if df_c is not None:
-        st.dataframe(df_c)
+    insights = generate_insights(df_c, map_c, df_l, df_p)
 
-        if "type" in df_c.columns:
-            fig = px.pie(df_c, names="type", values=amt_col, title="Income vs Expense")
-            st.plotly_chart(fig, use_container_width=True)
-
-# -----------------------------
-# LOANS
-# -----------------------------
-elif page == "Loans":
-    st.title("Loan Intelligence")
-
-    if df_l is not None:
-        st.dataframe(df_l)
-
-        if paid_col and total_col:
-            progress = df_l[paid_col].sum() / df_l[total_col].sum()
-            st.progress(progress, text=f"Repayment {progress*100:.1f}%")
+    if insights:
+        for i in insights:
+            st.info(i)
+    else:
+        st.success("No major risks detected")
