@@ -748,20 +748,38 @@ elif p == "Investments":
                     st.markdown('</div>', unsafe_allow_html=True)
 
         # Allocation chart
-        st.divider()
-        st.markdown('<div class="section-header">Allocation by type</div>', unsafe_allow_html=True)
-        df = pd.DataFrame(data)
-        df["amount"] = df["amount"].astype(float)
-        type_df = df.groupby("type")["amount"].sum().reset_index().sort_values("amount", ascending=True)
-        fig = go.Figure(go.Bar(
-            y=type_df["type"], x=type_df["amount"], orientation="h",
-            marker_color=COLORS, text=[inr(v) for v in type_df["amount"]],
-            textposition="outside", textfont=dict(color=TEXT_CLR, size=11),
-            hovertemplate="%{y}<br>%{text}<extra></extra>"
-        ))
-        fig.update_layout(xaxis=dict(showticklabels=False, showgrid=False))
-        plotly_dark(fig, height=max(220, len(type_df)*40))
-        st.plotly_chart(fig, use_container_width=True)
+st.divider()
+st.markdown('<div class="section-header">Allocation by type</div>', unsafe_allow_html=True)
+if not data:
+    st.info("No investment data available.")
+else:
+    df = pd.DataFrame(data)
+    # SAFETY CHECK
+    if "amount" not in df.columns or "type" not in df.columns:
+        st.error("Invalid data format in investments table.")
+    else:
+        df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
+        type_df = (
+            df.groupby("type")["amount"]
+            .sum()
+            .reset_index()
+            .sort_values("amount", ascending=True)
+        )
+        if type_df.empty:
+            st.info("No valid allocation data.")
+        else:
+            fig = go.Figure(go.Bar(
+                y=type_df["type"],
+                x=type_df["amount"],
+                orientation="h",
+                text=[f"₹{int(v):,}" for v in type_df["amount"]],
+                textposition="outside"
+            ))
+            fig.update_layout(
+                height=max(220, len(type_df)*40),
+                xaxis=dict(showticklabels=False)
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
         st.subheader("Add new investment")
