@@ -216,7 +216,55 @@ def get_supabase():
     return create_client(url, key)
 
 sb = get_supabase()
+# ─── AUTH SYSTEM ──────────────────────────────────────────────────────────────
+def login_ui():
+    st.title("🔐 Login Required")
 
+    tab1, tab2 = st.tabs(["Login", "Sign Up"])
+
+    with tab1:
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Password", type="password", key="login_pass")
+
+        if st.button("Login"):
+            try:
+                res = sb.auth.sign_in_with_password({
+                    "email": email,
+                    "password": password
+                })
+                st.session_state["user"] = res.user
+                st.rerun()
+            except:
+                st.error("Invalid credentials")
+
+    with tab2:
+        email = st.text_input("Email", key="signup_email")
+        password = st.text_input("Password", type="password", key="signup_pass")
+
+        if st.button("Create Account"):
+            try:
+                sb.auth.sign_up({
+                    "email": email,
+                    "password": password
+                })
+                st.success("Account created. Please login.")
+            except:
+                st.error("Signup failed")
+
+def check_auth():
+    return st.session_state.get("user")
+
+def logout():
+    if st.button("Logout"):
+        sb.auth.sign_out()
+        st.session_state.pop("user", None)
+        st.rerun()
+# ─── AUTH GATE ────────────────────────────────────────────────────────────────
+user = check_auth()
+if not user:
+    login_ui()
+    st.stop()
+        
 # ─── DB HELPERS ───────────────────────────────────────────────────────────────
 def q(table, order="created_at", desc=True):
     try:
